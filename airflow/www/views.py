@@ -142,6 +142,7 @@ from airflow.www.forms import (
     TaskInstanceEditForm,
     create_connection_form_class,
 )
+from airflow.www.utils import datetime_to_string
 from airflow.www.widgets import AirflowModelListWidget, AirflowVariableShowWidget
 
 if TYPE_CHECKING:
@@ -216,6 +217,7 @@ def get_safe_url(url):
 
 def get_date_time_num_runs_dag_runs_form_data(www_request, session, dag):
     """Get Execution Data, Base Date & Number of runs from a Request."""
+    logging.info("www %r" % www_request)
     date_time = www_request.args.get("execution_date")
     run_id = www_request.args.get("run_id")
     # First check run id, then check execution date, if not fall back on the latest dagrun
@@ -2947,6 +2949,7 @@ class Airflow(AirflowBaseView):
             **sanitize_args(request.args),
             "dag_id": dag_id,
             "tab": "graph",
+            "base_date": dt_nr_dr_data["base_date"],
             "dag_run_id": dag_run_id,
         }
 
@@ -3474,6 +3477,81 @@ class Airflow(AirflowBaseView):
         # avoid spaces to reduce payload size
         return (
             htmlsafe_json_dumps(data, separators=(",", ":"), dumps=flask.json.dumps),
+            {"Content-Type": "application/json; charset=utf-8"},
+        )
+
+
+    @expose("/object/ti_data")
+    @auth.has_access(
+        [
+            (permissions.ACTION_CAN_READ, permissions.RESOURCE_DAG),
+            (permissions.ACTION_CAN_READ, permissions.RESOURCE_TASK_INSTANCE),
+        ]
+    )
+    def ti_data(self):
+        """Returns grid data."""
+
+        num_runs = request.args.get("numRuns", type=int)
+        if num_runs is None:
+            num_runs = conf.getint("webserver", "default_dag_run_display_number")
+
+        try:
+            end_date = timezone.parse(request.args["endDate"], strict=True)
+        except (KeyError, ValueError):
+            end_date = timezone.utcnow()
+
+        try:
+            start_date = timezone.parse(request.args["startDate"], strict=True)
+        except (KeyError, ValueError):
+            start_date = timezone.utcnow()
+
+        with create_session() as session:
+            #query = select(DagRun).where(DagRun.dag_id == dag.dag_id, DagRun.execution_date <= base_date)
+            query = select(TaskInstance.task_id,
+                           TaskInstance.dag_id,
+                           TaskInstance.hostname,
+                           TaskInstance.start_date,
+                           TaskInstance.end_date,
+                           TaskInstance.run_id,
+                           TaskInstance.try_number,
+                           TaskInstance.map_index,
+                           TaskInstance.state,
+                           TaskInstance.queue
+                           ).where(
+                                TaskInstance.state.in_([TaskInstanceState.RUNNING, TaskInstanceState.FAILED, TaskInstanceState.SUCCESS, TaskInstanceState.UP_FOR_RETRY, TaskInstanceState.RESTARTING]),
+                                TaskInstance.start_date <= end_date,
+                                ((TaskInstance.end_date >= start_date) | (TaskInstance.end_date is None)),
+                           ).limit(num_runs).order_by(TaskInstance.start_date.desc())
+            dbdata = list(session.execute(query))
+
+        logging.info(dbdata)
+
+        def encode_run(ti: TaskInstance):
+            return {
+                "task_id": ti.task_id,
+                "dag_id": ti.dag_id,
+                "run_id": ti.run_id,
+                "state": ti.state,
+                "hostname": ti.hostname,
+                "map_index": ti.map_index,
+                "try_number": ti.try_number,
+                "queue": ti.queue,
+                "start_date": datetime_to_string(ti.start_date),
+                "end_date": datetime_to_string(ti.end_date),
+            }
+        encoded_runs = [encode_run(ti) for ti in dbdata]
+        warnings = []
+        if len(encoded_runs) == num_runs:
+            warnings.append(f"Page size {num_runs} exceeded. Only showing latest {num_runs} runs within time interval.")
+        if len(encoded_runs) == 0:
+            warnings.append(f"No runs found within selected interval")
+        data = {
+            "tis": encoded_runs,
+            "warnings": warnings,
+        }
+        # avoid spaces to reduce payload size
+        return (
+            json.dumps(data),
             {"Content-Type": "application/json; charset=utf-8"},
         )
 

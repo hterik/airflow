@@ -83,6 +83,7 @@ interface TaskInstance {
   triggererJob?: Job;
   trigger?: Trigger;
   note: string | null;
+  hostname?: string;
 }
 
 interface Trigger {

@@ -25,7 +25,9 @@ import { useGridData } from "src/api";
 import Time from "src/components/Time";
 import { getDuration } from "src/datetime_utils";
 
-import Row from "./Row";
+import Row, { RowData, SelectionCallback } from "./Row";
+import type { Task } from "src/types";
+import { isEqual } from "lodash";
 
 interface Props {
   openGroupIds: string[];
@@ -34,16 +36,38 @@ interface Props {
 }
 
 const Gantt = ({ openGroupIds, gridScrollRef, ganttScrollRef }: Props) => {
+  const {
+    data: { dagRuns, groups },
+  } = useGridData();
+  const { selected, onSelect } = useSelection();  
+
+  const { startDate, endDate, rowData } = selectionToRowData(
+    groups,
+    dagRuns,
+    selected,
+    openGroupIds
+  );
+
+  if (!selected.runId)
+  {
+    return (
+      <Alert status="warning" position="absolute" top={2}>
+        <AlertIcon />
+        Please select a dag run in order to see a gantt chart
+      </Alert>
+    )
+  }
+  return <GanttInner  gridScrollRef={gridScrollRef} ganttScrollRef={ganttScrollRef} rowData={rowData} startDate={startDate} endDate={endDate} onSelect={onSelect} />
+
+}
+
+export const GanttInner = ({ gridScrollRef, ganttScrollRef, rowData, startDate, endDate, onSelect, openGroupIds }: Props) => {
   const ganttRef = useRef<HTMLDivElement>(null);
   const [top, setTop] = useState(0);
   const [width, setWidth] = useState(500);
   const [height, setHeight] = useState("100%");
-  const {
-    selected: { runId, taskId },
-  } = useSelection();
-  const {
-    data: { dagRuns, groups },
-  } = useGridData();
+  const [prevRowData, setPrevRowData] = useState({startDate, endDate, rowData, openGroupIds});
+  
 
   const calculateGanttDimensions = useCallback(() => {
     if (ganttRef?.current) {
@@ -60,10 +84,6 @@ const Gantt = ({ openGroupIds, gridScrollRef, ganttScrollRef }: Props) => {
     }
   }, [ganttRef, gridScrollRef]);
 
-  // Calculate top, height and width when changing selections
-  useEffect(() => {
-    calculateGanttDimensions();
-  }, [runId, taskId, openGroupIds, calculateGanttDimensions]);
 
   const onGridScroll = (e: Event) => {
     const { scrollTop } = e.currentTarget as HTMLDivElement;
@@ -104,103 +124,202 @@ const Gantt = ({ openGroupIds, gridScrollRef, ganttScrollRef }: Props) => {
     return () => {};
   }, [ganttRef, calculateGanttDimensions]);
 
-  const dagRun = dagRuns.find((dr) => dr.runId === runId);
-
-  let startDate = dagRun?.queuedAt || dagRun?.startDate;
-  let endDate = dagRun?.endDate;
-
-  // Check if any task instance dates are outside the bounds of the dag run dates and update our min start and max end
-  groups.children?.forEach((task) => {
-    const taskInstance = task.instances.find((ti) => ti.runId === runId);
-    if (
-      taskInstance?.queuedDttm &&
-      (!startDate ||
-        Date.parse(taskInstance.queuedDttm) < Date.parse(startDate))
-    ) {
-      startDate = taskInstance.queuedDttm;
-    } else if (
-      taskInstance?.startDate &&
-      (!startDate || Date.parse(taskInstance.startDate) < Date.parse(startDate))
-    ) {
-      startDate = taskInstance.startDate;
-    }
-
-    if (
-      taskInstance?.endDate &&
-      (!endDate || Date.parse(taskInstance.endDate) > Date.parse(endDate))
-    ) {
-      endDate = taskInstance.endDate;
-    }
-  });
-
-  const numBars = Math.round(width / 100);
-  const runDuration = getDuration(startDate, endDate);
-  const intervals = runDuration / numBars;
+  // openGroupIds need to be part of the dependency array to recalculate the gantt chart when the groups are toggled in grid
+  if (!isEqual(prevRowData, {startDate, endDate, rowData, openGroupIds})) {  
+    calculateGanttDimensions()
+    setPrevRowData({startDate, endDate, rowData, openGroupIds});
+  }
 
   return (
     <Box ref={ganttRef} position="relative" height="100%" overflow="hidden">
-      {!runId && (
-        <Alert status="warning" position="absolute" top={2}>
-          <AlertIcon />
-          Please select a dag run in order to see a gantt chart
-        </Alert>
-      )}
-      <Box borderBottomWidth={1} pt={`${top}px`} pointerEvents="none">
-        {Array.from(Array(numBars)).map((_, i) => (
-          <Box
-            position="absolute"
-            left={`${(width / numBars) * i}px`}
-            // eslint-disable-next-line react/no-array-index-key
-            key={i}
-          >
-            <Text
-              color="gray.400"
-              fontSize="sm"
-              transform="rotate(-30deg) translateX(28px)"
-              mt={-6}
-              mb={1}
-              ml={-9}
-            >
-              <Time
-                // @ts-ignore
-                dateTime={moment(startDate)
-                  .add(i * intervals, "milliseconds")
-                  .format()}
-                format="HH:mm:ss z"
-              />
-            </Text>
-            <Divider orientation="vertical" height={height} />
-          </Box>
-        ))}
-        <Box position="absolute" left={width - 2} key="end">
-          <Divider orientation="vertical" height={height} />
-        </Box>
-      </Box>
+      
+      <Timeline
+        ganttScrollRef={ganttScrollRef}
+        rowData={rowData}
+        top={top}
+        width={width}
+        height={height}
+        onSelect={onSelect}
+        startDate={startDate}
+        endDate={endDate}
+      />
+    </Box>
+  );
+};
+
+export const Timeline = ({
+  rowData,
+  ganttScrollRef,
+  top,
+  width,
+  height,
+  onSelect,
+  startDate,
+  endDate,
+}: {
+  rowData: RowData[];
+  ganttScrollRef: React.RefObject<HTMLDivElement>;
+  top: number;
+  width: number;
+  height: string;
+  onSelect: SelectionCallback;
+  startDate: string | undefined | null;
+  endDate: string | undefined | null;
+}) => {
+  return (
+    <>
+      <TimelineTimeBar
+        width={width}
+        startDate={new Date(startDate)}
+        endDate={new Date(endDate)}
+        top={top}
+        height={height}
+      />
       <Box
-        maxHeight={height}
+        
         height="100%"
         overflowY="scroll"
         ref={ganttScrollRef}
         overscrollBehavior="contain"
       >
         <div>
-          {!!runId &&
-            !!dagRun &&
-            !!groups.children &&
-            groups.children.map((c) => (
-              <Row
-                ganttWidth={width}
-                openGroupIds={openGroupIds}
-                task={c}
-                ganttStartDate={startDate}
-                ganttEndDate={endDate}
-                key={`gantt-${c.id}`}
-              />
-            ))}
+          {rowData.map((c) => (
+            <Row
+              ganttWidth={width}
+              rowData={c}
+              ganttStartDate={startDate}
+              ganttEndDate={endDate}
+              onSelect={onSelect}
+              key={`gantt-${c.id}`}
+            />
+          ))}
         </div>
+      </Box>
+    </>
+  );
+};
+
+const TimelineTimeBar = ({
+  startDate,
+  endDate,
+  width,
+  top,
+  height,
+}: {
+  startDate: Date;
+  endDate: Date;
+  width: number;
+  top: number;
+  height: string;
+}) => {
+  const numBars = Math.round(width / 100);
+  const runDuration = getDuration(startDate, endDate);
+  const intervals = runDuration / numBars;
+
+  return (
+    <Box borderBottomWidth={1} pt={`${top}px`} pointerEvents="none">
+      {Array.from(Array(numBars)).map((_, i) => (
+        <Box
+          position="absolute"
+          left={`${(width / numBars) * i}px`}
+          // eslint-disable-next-line react/no-array-index-key
+          key={i}
+        >
+          <Text
+            color="gray.400"
+            fontSize="sm"
+            transform="rotate(-30deg) translateX(28px)"
+            mt={-6}
+            mb={1}
+            ml={-9}
+          >
+            <Time
+              // @ts-ignore
+              dateTime={moment(startDate)
+                .add(i * intervals, "milliseconds")
+                .format()}
+              format="HH:mm:ss z"
+            />
+          </Text>
+          <Divider orientation="vertical" height={height} />
+        </Box>
+      ))}
+      <Box position="absolute" left={width - 2} key="end">
+        <Divider orientation="vertical" height={height} />
       </Box>
     </Box>
   );
+};
+
+const selectionToRowData = (groups, dagRuns, selected, openGroupIds) => {
+  // Take griddata, extract the selected runid and transform into RowData format required by TimeLine
+  const dagRun = dagRuns.find((dr) => dr.runId === selected.runId);
+  const rowData: RowData[] = [];
+
+  const walkTaskGroups = (task: Task): RowData => {
+    const d = {
+      items: task.instances
+        .filter((ti) => ti.runId === selected.runId)
+        .map((ti) => {
+          return {
+            isSelected: ti.taskId === selected.taskId,
+            instance: ti,
+            task: task,
+          };
+        }),
+      children: task.children?.map((t) => walkTaskGroups(t)) || [],
+      isOpen: openGroupIds.includes(task.id || ""),
+    };
+    return d;
+  };
+
+  for (const task of groups.children || []) {
+    rowData.push(walkTaskGroups(task));
+  }
+  let dagStartDate = dagRun?.queuedAt || dagRun?.startDate;
+  let dagEndDate = dagRun?.endDate;
+  let { startDate, endDate } = findDateBoundaries(
+    dagStartDate,
+    dagEndDate,
+    rowData
+  );
+  return { startDate, endDate, rowData };
+};
+
+const findDateBoundaries = (
+  startDate: string | null | undefined,
+  endDate: string | null | undefined,
+  rowData: RowData[]
+) => {
+  // Check if any task instance dates are outside the bounds of the dag run dates and update our min start and max end
+
+  for (const row of rowData) {
+    for (const item of row.items) {
+      const taskInstance = item.instance;
+
+      if (
+        taskInstance?.queuedDttm &&
+        (!startDate ||
+          Date.parse(taskInstance.queuedDttm) < Date.parse(startDate))
+      ) {
+        startDate = taskInstance.queuedDttm;
+      } else if (
+        taskInstance?.startDate &&
+        (!startDate ||
+          Date.parse(taskInstance.startDate) < Date.parse(startDate))
+      ) {
+        startDate = taskInstance.startDate;
+      }
+
+      if (
+        taskInstance?.endDate &&
+        (!endDate || Date.parse(taskInstance.endDate) > Date.parse(endDate))
+      ) {
+        endDate = taskInstance.endDate;
+      }
+    }
+  }
+  return { endDate, startDate };
 };
 
 export default Gantt;

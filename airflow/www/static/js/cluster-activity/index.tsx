@@ -27,6 +27,7 @@ import { Flex, Heading } from "@chakra-ui/react";
 import App from "src/App";
 import LiveMetrics from "./live-metrics";
 import HistoricalMetrics from "./historical-metrics";
+import { ClusterGantt } from "./cluster-gantt";
 
 // create shadowRoot
 const root = document.querySelector("#root");
@@ -46,8 +47,8 @@ const ClusterActivity = () => (
     <Heading mt={3} mb={2} fontWeight="normal" size="lg">
       Cluster Activity
     </Heading>
-    <LiveMetrics />
-    <HistoricalMetrics />
+  
+    <ClusterGantt />
   </Flex>
 );
 

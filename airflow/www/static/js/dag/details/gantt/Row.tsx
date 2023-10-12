@@ -18,46 +18,115 @@
  */
 
 import React from "react";
-import { Box, Tooltip, Flex } from "@chakra-ui/react";
-import useSelection from "src/dag/useSelection";
+import { Box, Tooltip, Flex, Link } from "@chakra-ui/react";
+import useSelection, { SelectionProps } from "src/dag/useSelection";
 import { getDuration } from "src/datetime_utils";
-import { SimpleStatus } from "src/dag/StatusBox";
+import { SimpleStatus, boxSize, boxSizePx } from "src/dag/StatusBox";
 import { useContainerRef } from "src/context/containerRef";
 import { hoverDelay } from "src/utils";
-import type { Task } from "src/types";
+import type { Task, TaskInstance } from "src/types";
 import GanttTooltip from "./GanttTooltip";
 
-interface Props {
+export interface RowItemData{
+    isSelected: boolean
+    instance: TaskInstance;
+    task: Task
+    href?: string
+}
+
+export interface RowData {
+  isOpen: boolean
+  items: RowItemData[];
+  children?: RowData[];
+}
+
+export type SelectionCallback = (selection: SelectionProps) => void;
+
+interface CommonProps {
   ganttWidth?: number;
-  openGroupIds: string[];
-  task: Task;
   ganttStartDate?: string | null;
   ganttEndDate?: string | null;
+  onSelect: SelectionCallback
+}
+
+interface Props extends CommonProps {
+  rowData: RowData;  
+} 
+
+interface RowItemProps extends CommonProps {
+  item: RowItemData;
 }
 
 const Row = ({
   ganttWidth = 500,
-  openGroupIds,
-  task,
+  rowData,
+  onSelect,
   ganttStartDate,
   ganttEndDate,
-}: Props) => {
-  const {
-    selected: { runId, taskId },
-    onSelect,
-  } = useSelection();
+}: Props) => {  
+  const isSelected = rowData.items.some((it) => it.isSelected)
+  const isOpen = rowData.isOpen
+
+  return (
+    <div>
+      <Box
+        py="4px"
+        borderBottomWidth={1}
+        borderBottomColor={!!rowData.children && isOpen ? "gray.400" : "gray.200"}
+        bg={isSelected ? "blue.100" : "inherit"}       
+        position="relative" 
+        height={`${boxSize + 8}px`}
+        overflow="hidden"
+      >
+        {rowData.items.map((item) => (
+          <RowItem            
+            key={item.instance.taskId + item.instance.runId + "-" + item.instance.tryNumber + "-" + item.instance.mapIndex}
+            ganttWidth={ganttWidth}
+            item={item}
+            ganttStartDate={ganttStartDate}
+            ganttEndDate={ganttEndDate}
+            onSelect={onSelect}            
+          />
+        ))}
+        {rowData.items.length == 0 ?  <Box height="10px" /> : null}
+      </Box>
+      {isOpen &&
+        !!rowData.children &&
+        rowData.children.map((c) => (
+          <Row
+            ganttWidth={ganttWidth}
+            ganttStartDate={ganttStartDate}
+            ganttEndDate={ganttEndDate}
+            onSelect={onSelect}
+            rowData={c}
+            key={`gantt-${c.id}`}
+          />
+        ))}
+    </div>
+  );
+};
+
+const RowItem = ({
+  ganttWidth = 500,
+  item,
+  ganttStartDate,
+  ganttEndDate,
+  onSelect
+}: RowItemProps) => {
+
+  const instance = item.instance;
+  const task = item.task;
+
   const containerRef = useContainerRef();
 
   const runDuration = getDuration(ganttStartDate, ganttEndDate);
 
-  const instance = task.instances.find((ti) => ti.runId === runId);
-  const isSelected = taskId === instance?.taskId;
   const hasValidQueuedDttm =
     !!instance?.queuedDttm &&
     (instance?.startDate && instance?.queuedDttm
       ? instance.queuedDttm < instance.startDate
       : true);
-  const isOpen = openGroupIds.includes(task.id || "");
+  
 
   // Calculate durations in ms
   const taskDuration = getDuration(instance?.startDate, instance?.endDate);
@@ -81,72 +150,50 @@ const Row = ({
   if (hasValidQueuedDttm && queuedWidth < 5) queuedWidth = 5;
   const offsetMargin = taskStartOffsetPercent * ganttWidth;
 
-  return (
-    <div>
-      <Box
-        py="4px"
-        borderBottomWidth={1}
-        borderBottomColor={!!task.children && isOpen ? "gray.400" : "gray.200"}
-        bg={isSelected ? "blue.100" : "inherit"}
+  return <Tooltip
+    label={<GanttTooltip task={task} instance={instance} />}
+    hasArrow
+    portalProps={{ containerRef }}
+    placement="top"
+    openDelay={hoverDelay}
+  >
+    <Link href={item.href}>
+    <Flex
+      width={`${width + queuedWidth}px`}
+      cursor="pointer"
+      pointerEvents="auto"
+      left={`${offsetMargin}px`}
+      top={"4px"}
+      onClick={item.href ? undefined : () => {
+        onSelect({
+          runId: instance.runId,
+          taskId: instance.taskId,
+        });
+      }}
+      position="absolute"
+    >
+      {instance.state !== "queued" && hasValidQueuedDttm && (
+        <SimpleStatus
+          state="queued"
+          width={`${queuedWidth}px`}
+          borderRightRadius={0}
+          // The normal queued color is too dark when next to the actual task's state
+          opacity={0.6}
+        />
+      )}
+      <SimpleStatus
+        state={instance.state}
+        width={`${width}px`}
+        borderLeftRadius={
+          instance.state !== "queued" && hasValidQueuedDttm ? 0 : undefined
+        }
+        overflow="hidden" textOverflow="ellipsis" whiteSpace="nowrap"
       >
-        {instance ? (
-          <Tooltip
-            label={<GanttTooltip task={task} instance={instance} />}
-            hasArrow
-            portalProps={{ containerRef }}
-            placement="top"
-            openDelay={hoverDelay}
-          >
-            <Flex
-              width={`${width + queuedWidth}px`}
-              cursor="pointer"
-              pointerEvents="auto"
-              marginLeft={`${offsetMargin}px`}
-              onClick={() => {
-                onSelect({
-                  runId: instance.runId,
-                  taskId: instance.taskId,
-                });
-              }}
-            >
-              {instance.state !== "queued" && hasValidQueuedDttm && (
-                <SimpleStatus
-                  state="queued"
-                  width={`${queuedWidth}px`}
-                  borderRightRadius={0}
-                  // The normal queued color is too dark when next to the actual task's state
-                  opacity={0.6}
-                />
-              )}
-              <SimpleStatus
-                state={instance.state}
-                width={`${width}px`}
-                borderLeftRadius={
-                  instance.state !== "queued" && hasValidQueuedDttm
-                    ? 0
-                    : undefined
-                }
-              />
-            </Flex>
-          </Tooltip>
-        ) : (
-          <Box height="10px" />
-        )}
-      </Box>
-      {isOpen &&
-        !!task.children &&
-        task.children.map((c) => (
-          <Row
-            ganttWidth={ganttWidth}
-            openGroupIds={openGroupIds}
-            ganttStartDate={ganttStartDate}
-            ganttEndDate={ganttEndDate}
-            task={c}
-            key={`gantt-${c.id}`}
-          />
-        ))}
-    </div>
-  );
+        {item.title}
+      </SimpleStatus>
+    </Flex>
+    </Link>
+  </Tooltip>;
 };
 
 export default Row;
